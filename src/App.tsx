@@ -117,7 +117,7 @@ type EventLogForm = {
 
 type FormErrors<T extends string> = Partial<Record<T, string>>
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3001'
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
 const TOKEN_KEY = 'techlist.admin.token'
 
 const emptyCompany: CompanyForm = {
@@ -866,8 +866,8 @@ function App() {
         </article>
         <article className="status-card">
           <h2>Backend URL</h2>
-          <p className="status-value small">{API_BASE_URL}</p>
-          <p className="muted">Configure em VITE_API_BASE_URL</p>
+          <p className="status-value small">{API_BASE_URL || 'Mesma origem'}</p>
+          <p className="muted">API encaminhada pelo proxy do servidor</p>
         </article>
         <article className="status-card">
           <h2>Autenticacao</h2>
