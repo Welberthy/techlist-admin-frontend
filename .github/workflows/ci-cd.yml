@@ -1,0 +1,104 @@
+name: CI/CD Admin Frontend
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: admin-frontend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload build
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: admin-frontend-dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    needs: validate
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
+    runs-on: ubuntu-latest
+    environment: deploy_oncad
+
+    steps:
+      - name: Download build
+        uses: actions/download-artifact@v4
+        with:
+          name: admin-frontend-dist
+          path: dist/
+
+      - name: Configure SSH
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_HOST" || { echo "::error::DEPLOY_HOST ausente."; exit 1; }
+          test -n "$DEPLOY_KEY" || { echo "::error::DEPLOY_KEY ausente."; exit 1; }
+          test -n "$DEPLOY_KNOWN_HOSTS" || { echo "::error::DEPLOY_KNOWN_HOSTS ausente."; exit 1; }
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Publish to VPS
+        env:
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          RELEASE_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_USER" || { echo "::error::DEPLOY_USER ausente."; exit 1; }
+          remote="$DEPLOY_USER@$DEPLOY_HOST"
+          remote_tmp="/tmp/admin-frontend-$RELEASE_ID"
+          release_dir="/var/www/admin.oncad.com.br/releases/$RELEASE_ID"
+
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$DEPLOY_PORT" "$remote" "mkdir -p '$remote_tmp'"
+          tar -czf - -C dist . | ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$DEPLOY_PORT" "$remote" "tar -xzf - -C '$remote_tmp'"
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -p "$DEPLOY_PORT" "$remote" "
+              set -e;
+              sudo -n install -d -m 755 /var/www/admin.oncad.com.br/releases;
+              sudo -n mv '$remote_tmp' '$release_dir';
+              sudo -n ln -sfn '$release_dir' /var/www/admin.oncad.com.br/current;
+              test -s /var/www/admin.oncad.com.br/current/index.html;
+            "
